@@ -1,0 +1,35 @@
+# --- Patient data and secrets: must NEVER be committed ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+keys.json
+filestore/
+backups/
+data/
+*.csv
+!scripts/templates/*.csv
+
+# --- Synthetic data output (regenerated, large) ---
+synthea_output/
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# --- Node ---
+node_modules/
+dist/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Miscellaneous ---
+CLAUDE.md
+docs/

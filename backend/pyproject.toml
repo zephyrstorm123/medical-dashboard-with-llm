@@ -1,0 +1,29 @@
+[project]
+name = "clinic-dashboard-backend"
+version = "0.0.1"
+description = "Offline clinic records API with local, cited AI answers"
+requires-python = ">=3.12"
+# Runtime libraries are added phase by phase, when we first need them.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: real errors, I: import order, B: common bugs, S: security checks
+select = ["E", "F", "I", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# `assert` is how pytest works, so allow it in tests only
+"tests/*" = ["S101"]
