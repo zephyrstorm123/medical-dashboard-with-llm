@@ -1,10 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "clinic-dashboard-backend"
 version = "0.0.1"
 description = "Offline clinic records API with local, cited AI answers"
 requires-python = ">=3.12"
 # Runtime libraries are added phase by phase, when we first need them.
-dependencies = []
+dependencies = [
+  "argon2-cffi>=23.1",
+  "cryptography>=42.0",
+  "sqlalchemy>=2.0",
+  "sqlcipher3>=0.6",
+  "alembic>=1.14",
+]
+
+[tool.setuptools]
+packages = ["app"]
 
 [project.optional-dependencies]
 dev = [
@@ -14,7 +27,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", ".."]
 
 [tool.ruff]
 line-length = 100
