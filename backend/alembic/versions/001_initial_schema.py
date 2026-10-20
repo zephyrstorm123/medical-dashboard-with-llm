@@ -24,7 +24,6 @@ Tables:
 """
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "001"
@@ -80,9 +79,7 @@ def upgrade() -> None:
         sa.Column("archived_at", sa.String(24), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("patient_number", name="uq_patient_number"),
-        sa.CheckConstraint(
-            "sex IN ('female','male','other','unknown')", name="ck_sex"
-        ),
+        sa.CheckConstraint("sex IN ('female','male','other','unknown')", name="ck_sex"),
     )
 
     op.create_index("idx_patients_name", "patients", ["last_name", "first_name"])
@@ -133,9 +130,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["patient_id"], ["patients.id"]),
         sa.ForeignKeyConstraint(["encounter_id"], ["encounters.id"]),
-        sa.CheckConstraint(
-            "status IN ('active','resolved','inactive')", name="ck_problem_status"
-        ),
+        sa.CheckConstraint("status IN ('active','resolved','inactive')", name="ck_problem_status"),
     )
 
     op.create_index("idx_problems_patient", "problems", ["patient_id"])
@@ -290,9 +285,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["patient_id"], ["patients.id"]),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
-        sa.CheckConstraint(
-            "status IN ('active','archived')", name="ck_ai_thread_status"
-        ),
+        sa.CheckConstraint("status IN ('active','archived')", name="ck_ai_thread_status"),
     )
 
     op.create_index("idx_ai_threads_patient", "ai_threads", ["patient_id"])
@@ -308,9 +301,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.String(24), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["thread_id"], ["ai_threads.id"]),
-        sa.CheckConstraint(
-            "role IN ('user','assistant')", name="ck_ai_message_role"
-        ),
+        sa.CheckConstraint("role IN ('user','assistant')", name="ck_ai_message_role"),
         sa.CheckConstraint(
             "feedback IN ('helpful','unhelpful','incorrect') OR feedback IS NULL",
             name="ck_ai_message_feedback",

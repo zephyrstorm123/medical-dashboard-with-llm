@@ -4,17 +4,23 @@ Tests for Alembic migrations.
 Verify that all 15 core tables are created and the migration completes successfully.
 """
 
+import os
+
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
-DB_PATH = "sqlite:///E:\\CodingProjects\\MedicalDashboardwithLLM\\backend\\clinic.db"
+from app.db.engine import create_encrypted_engine
+from app.db.migrate import upgrade_to_head
+
+NOW = "2026-10-19T00:00:00.000Z"
 
 
 @pytest.fixture
-def engine():
-    """Create engine for migrated database."""
-    eng = create_engine(DB_PATH)
+def engine(tmp_path):
+    """Fresh encrypted DB per test, built by the real migration."""
+    eng = create_encrypted_engine(os.urandom(32), str(tmp_path / "clinic.db"))
+    upgrade_to_head(eng)
     yield eng
     eng.dispose()
 
@@ -104,12 +110,15 @@ def test_foreign_keys_enforced(engine):
     """Verify FOREIGN KEY constraints are enforced."""
     with engine.connect() as conn:
         # Try to insert encounter with non-existent patient_id
-        with pytest.raises(IntegrityError):
+        # All NOT NULL columns supplied, so only the FK can fail
+        with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed"):
             conn.execute(
                 text(
-                    "INSERT INTO encounters (patient_id, encounter_date, encounter_type) "
-                    "VALUES (9999, '2026-10-19', 'consult')"
-                )
+                    "INSERT INTO encounters (patient_id, encounter_date, encounter_type, "
+                    "created_at, updated_at) "
+                    "VALUES (9999, '2026-10-19', 'consult', :now, :now)"
+                ),
+                {"now": NOW},
             )
             conn.commit()
 
@@ -118,27 +127,41 @@ def test_check_constraints_enforced(engine):
     """Verify CHECK constraints are enforced on sex column."""
     with engine.connect() as conn:
         # Try to insert patient with invalid sex value
-        with pytest.raises(IntegrityError):
+        # All NOT NULL columns supplied, so only the sex CHECK can fail
+        with pytest.raises(IntegrityError, match="CHECK constraint failed"):
             conn.execute(
                 text(
-                    "INSERT INTO patients (patient_number, last_name, first_name, birth_date, sex) "
-                    "VALUES ('P001', 'Doe', 'Jane', '1990-01-01', 'INVALID')"
-                )
+                    "INSERT INTO patients (patient_number, last_name, first_name, birth_date, "
+                    "sex, created_at, updated_at) "
+                    "VALUES ('P001', 'Doe', 'Jane', '1990-01-01', 'INVALID', :now, :now)"
+                ),
+                {"now": NOW},
             )
             conn.commit()
 
 
 def test_encounter_type_check_constraint(engine):
     """Verify CHECK constraint on encounter_type."""
-    # This test uses the patient already inserted in previous test
-    # Try to insert encounter with invalid type
     with engine.connect() as conn:
-        with pytest.raises(IntegrityError):
-            # Use patient_id=1 which was created in the previous test
+        # This test creates its own patient instead of relying on another test's data
+        patient_id = conn.execute(
+            text(
+                "INSERT INTO patients (patient_number, last_name, first_name, birth_date, "
+                "sex, created_at, updated_at) "
+                "VALUES ('P001', 'Doe', 'Jane', '1990-01-01', 'female', :now, :now) "
+                "RETURNING id"
+            ),
+            {"now": NOW},
+        ).scalar()
+        conn.commit()
+
+        with pytest.raises(IntegrityError, match="CHECK constraint failed"):
             conn.execute(
                 text(
-                    "INSERT INTO encounters (patient_id, encounter_date, encounter_type) "
-                    "VALUES (1, '2026-10-19', 'invalid_type')"
-                )
+                    "INSERT INTO encounters (patient_id, encounter_date, encounter_type, "
+                    "created_at, updated_at) "
+                    "VALUES (:pid, '2026-10-19', 'invalid_type', :now, :now)"
+                ),
+                {"pid": patient_id, "now": NOW},
             )
             conn.commit()

@@ -37,6 +37,10 @@ target-version = "py312"
 # E/F: real errors, I: import order, B: common bugs, S: security checks
 select = ["E", "F", "I", "B", "S"]
 
+[tool.ruff.lint.isort]
+# Our backend/alembic/ folder makes ruff think the alembic package is ours; it's a library
+known-third-party = ["alembic"]
+
 [tool.ruff.lint.per-file-ignores]
 # `assert` is how pytest works, so allow it in tests only
 "tests/*" = ["S101"]

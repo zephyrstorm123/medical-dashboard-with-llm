@@ -1,15 +1,14 @@
 """
 Alembic migration environment.
 
-This script runs every time you call 'alembic upgrade' or 'alembic downgrade'.
-It connects to the encrypted SQLite database and applies SQL from migration files.
+Online migrations run only on a connection the app has already unlocked with the
+data key (see app.db.migrate.upgrade_to_head). Plain `alembic upgrade` from the
+command line refuses to run, so it can never create an unencrypted database.
 """
 
 import sys
 from logging.config import fileConfig
 from pathlib import Path
-
-from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
@@ -21,40 +20,16 @@ from app.db.models import Base  # noqa: E402
 
 config = context.config
 
-# Log Alembic SQL statements
-config_file = config.config_file_name
-if config_file is not None:
-    fileConfig(config_file)
+# Only set up logging when run from the command line; when called from the app,
+# fileConfig would replace the app's own logging configuration.
+if config.config_file_name is not None and "connection" not in config.attributes:
+    fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
 
-def configure_sqlalchemy_url(
-    url: str, data_key: bytes
-) -> dict[str, object]:
-    """
-    Build SQLAlchemy config for encrypted SQLite.
-    
-    Args:
-        url: Database URL (e.g., "sqlite:///clinic.db")
-        data_key: 32-byte encryption key
-    
-    Returns:
-        Dictionary of engine arguments for engine_from_config()
-    """
-    config.set_main_option("sqlalchemy.url", url)
-    return config.get_section(config.config_ini_section)
-
-
 def run_migrations_offline() -> None:
-    """
-    Run migrations in 'offline' mode (generate SQL, don't execute).
-    
-    This is useful for:
-    - Reviewing SQL before applying
-    - Databases you can't connect to directly
-    - CI/CD that needs to inspect migrations first
-    """
+    """Generate the migration SQL without connecting (for reviewing it)."""
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
@@ -67,36 +42,16 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """
-    Run migrations in 'online' mode (execute SQL against real database).
-    
-    For encrypted SQLite (SQLCipher), we:
-    1. Create engine with PRAGMA key applied
-    2. Connect and run migrations
-    3. Close connection
-    """
-    # For now, use unencrypted SQLite for migrations (simplified)
-    # In production, you would:
-    # - Read data_key from keys.json
-    # - Call create_encrypted_engine(data_key, db_path)
-    # - Pass that connection to context.configure()
-    
-    configuration = config.get_section(config.config_ini_section)
-    configuration["sqlalchemy.echo"] = False
-
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.StaticPool,
-    )
-
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
+    """Apply migrations on the unlocked, encrypted connection passed in by the app."""
+    connection = config.attributes.get("connection")
+    if connection is None:
+        raise RuntimeError(
+            "Migrations need an unlocked, encrypted connection. "
+            "Run them through app.db.migrate.upgrade_to_head(engine)."
         )
-
-        with context.begin_transaction():
-            context.run_migrations()
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 if context.is_offline_mode():
