@@ -4,25 +4,11 @@ Tests for Alembic migrations.
 Verify that all 15 core tables are created and the migration completes successfully.
 """
 
-import os
-
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from app.db.engine import create_encrypted_engine
-from app.db.migrate import upgrade_to_head
-
 NOW = "2026-10-19T00:00:00.000Z"
-
-
-@pytest.fixture
-def engine(tmp_path):
-    """Fresh encrypted DB per test, built by the real migration."""
-    eng = create_encrypted_engine(os.urandom(32), str(tmp_path / "clinic.db"))
-    upgrade_to_head(eng)
-    yield eng
-    eng.dispose()
 
 
 def test_migration_creates_all_15_tables(engine):
@@ -87,10 +73,24 @@ def test_audit_log_table_structure(engine):
     result = inspector.get_columns("audit_log")
     column_names = {col["name"] for col in result}
 
-    assert "audit_no" in column_names
-    assert "hash" in column_names
-    assert "event_type" in column_names
-    assert "created_at" in column_names
+    # Columns exactly as docs/05
+    assert column_names == {
+        "id",
+        "occurred_at",
+        "action",
+        "user_id",
+        "entity_type",
+        "entity_id",
+        "patient_id",
+        "detail",
+        "prev_hash",
+        "hash",
+    }
+    # No FK on patient_id: entries must survive patient archiving
+    fks = inspector.get_foreign_keys("audit_log")
+    assert [fk["constrained_columns"] for fk in fks] == [["user_id"]]
+    index_names = {ix["name"] for ix in inspector.get_indexes("audit_log")}
+    assert {"idx_audit_time", "idx_audit_patient"} <= index_names
 
 
 def test_migration_version_tracked(engine):

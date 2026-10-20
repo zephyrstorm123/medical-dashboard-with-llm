@@ -115,9 +115,7 @@ class Patient(Base):
 
     # Constraints
     __table_args__ = (
-        CheckConstraint(
-            "sex IN ('female','male','other','unknown')", name="ck_sex"
-        ),
+        CheckConstraint("sex IN ('female','male','other','unknown')", name="ck_sex"),
         Index("idx_patients_name", "last_name", "first_name"),
         Index("idx_patients_birth", "birth_date"),
     )
@@ -227,9 +225,7 @@ class Problem(Base):
 
     # Constraints
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('active','resolved','inactive')", name="ck_problem_status"
-        ),
+        CheckConstraint("status IN ('active','resolved','inactive')", name="ck_problem_status"),
     )
 
     # Relationships
@@ -278,9 +274,7 @@ class Medication(Base):
 
     # Constraints
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('active','stopped','completed')", name="ck_med_status"
-        ),
+        CheckConstraint("status IN ('active','stopped','completed')", name="ck_med_status"),
         Index("idx_meds_patient", "patient_id", "status"),
         Index("idx_meds_drug", "drug_name"),
     )
@@ -374,9 +368,7 @@ class LabResult(Base):
             "value_num IS NOT NULL OR value_text IS NOT NULL",
             name="ck_lab_has_value",
         ),
-        CheckConstraint(
-            "flag IN ('N','L','H','LL','HH') OR flag IS NULL", name="ck_lab_flag"
-        ),
+        CheckConstraint("flag IN ('N','L','H','LL','HH') OR flag IS NULL", name="ck_lab_flag"),
         Index("idx_labs_patient_test", "patient_id", "test_name", "collected_date"),
     )
 
@@ -415,9 +407,7 @@ class Vital(Base):
     deleted_at = Column(String(24))
 
     # Constraints
-    __table_args__ = (
-        Index("idx_vitals_patient", "patient_id", "measured_at"),
-    )
+    __table_args__ = (Index("idx_vitals_patient", "patient_id", "measured_at"),)
 
     # Relationships
     patient = relationship("Patient", back_populates="vitals")
@@ -519,9 +509,7 @@ class Chunk(Base):
             "'lab_results','vitals','documents')",
             name="ck_source_table",
         ),
-        UniqueConstraint(
-            "source_table", "source_id", "chunk_index", name="uq_chunk_source"
-        ),
+        UniqueConstraint("source_table", "source_id", "chunk_index", name="uq_chunk_source"),
         Index("idx_chunks_patient", "patient_id"),
     )
 
@@ -610,9 +598,7 @@ class AICitation(Base):
     is_valid = Column(Integer, nullable=False, default=1, server_default="1")
 
     # Constraints
-    __table_args__ = (
-        CheckConstraint("is_valid IN (0,1)", name="ck_citation_valid"),
-    )
+    __table_args__ = (CheckConstraint("is_valid IN (0,1)", name="ck_citation_valid"),)
 
     # Relationships
     message = relationship("AIMessage", back_populates="citations")
@@ -622,35 +608,39 @@ class AuditLog(Base):
     """Append-only event log (cannot be updated or deleted).
 
     DB-level triggers enforce immutability.
-    Hash chain: hash = SHA-256(prev_hash + fields).
-    Changing any old row breaks all hashes after it (tamper detection).
+    Hash chain: hash = SHA-256(prev_hash + occurred_at + user_id + action +
+    entity_type + entity_id + patient_id + detail); see app/services/audit.py.
     patient_id: no FK (entries must survive if patient is archived).
+    detail: JSON with IDs and field names only, never clinical text.
     """
 
     __tablename__ = "audit_log"
 
-    audit_no = Column(Integer, primary_key=True)
-    patient_id = Column(Integer, nullable=True)  # No FK (survives if patient archived)
-    event_type = Column(String(50), nullable=False)
-    table_name = Column(String(50), nullable=False)
-    record_id = Column(Integer, nullable=False)
-    old_values = Column(Text, nullable=True)
-    new_values = Column(Text, nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    prev_hash = Column(String(64), nullable=True)
-    hash = Column(String(64), nullable=False)
-    created_at = Column(
+    id = Column(Integer, primary_key=True)
+    occurred_at = Column(
         String(24),
         nullable=False,
         server_default=func.strftime("%Y-%m-%dT%H:%M:%fZ", "now"),
     )
+    action = Column(String(20), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    entity_type = Column(String(50), nullable=True)
+    entity_id = Column(Integer, nullable=True)
+    patient_id = Column(Integer, nullable=True)  # No FK (survives if patient archived)
+    detail = Column(Text, nullable=True)
+    prev_hash = Column(String(64), nullable=False)
+    hash = Column(String(64), nullable=False)
 
     # Constraints
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('create','update','delete','archive')",
-            name="ck_audit_event_type",
+            "action IN ('unlock','unlock_failed','lock','view','create','update',"
+            "'delete','export','ai_query','backup','restore')",
+            name="ck_audit_action",
         ),
+        UniqueConstraint("hash", name="uq_audit_hash"),
+        Index("idx_audit_time", "occurred_at"),
+        Index("idx_audit_patient", "patient_id", "occurred_at"),
     )
 
     # Relationships

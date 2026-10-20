@@ -14,21 +14,21 @@ from app.db.models import Base, Encounter, Patient
 def test_models_create_all_tables():
     """Test that all 15 models can be created in a database."""
     data_key = b"0" * 32
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         engine = create_encrypted_engine(data_key, db_path)
-        
+
         # Create all tables from models
         Base.metadata.create_all(engine)
-        
+
         # Verify all expected tables exist
         with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ))
+            result = conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            )
             tables = [row[0] for row in result.fetchall()]
-        
+
         # Expected 15 tables + sqlite_sequence (for autoincrement)
         expected_tables = {
             "ai_citations",
@@ -47,24 +47,24 @@ def test_models_create_all_tables():
             "users",
             "vitals",
         }
-        
+
         assert expected_tables.issubset(set(tables)), (
             f"Missing tables: {expected_tables - set(tables)}"
         )
-        
+
         engine.dispose()
 
 
 def test_patient_with_relationships():
     """Test that a patient can be created with related encounters."""
     data_key = b"1" * 32
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         engine = create_encrypted_engine(data_key, db_path)
-        
+
         Base.metadata.create_all(engine)
-        
+
         with Session(engine) as session:
             # Create a patient
             patient = Patient(
@@ -76,7 +76,7 @@ def test_patient_with_relationships():
             )
             session.add(patient)
             session.flush()  # Get the patient ID
-            
+
             # Create an encounter for that patient
             encounter = Encounter(
                 patient_id=patient.id,
@@ -90,25 +90,25 @@ def test_patient_with_relationships():
             )
             session.add(encounter)
             session.commit()
-            
+
             # Verify relationships work
             assert len(patient.encounters) == 1
             assert patient.encounters[0].chief_complaint == "Headache"
             assert patient.encounters[0].patient_id == patient.id
-        
+
         engine.dispose()
 
 
 def test_foreign_key_constraint_enforced():
     """Test that foreign key constraints are enforced."""
     data_key = b"2" * 32
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         engine = create_encrypted_engine(data_key, db_path)
-        
+
         Base.metadata.create_all(engine)
-        
+
         with Session(engine) as session:
             # Try to create an encounter with non-existent patient_id
             encounter = Encounter(
@@ -117,28 +117,26 @@ def test_foreign_key_constraint_enforced():
                 encounter_type="consult",
             )
             session.add(encounter)
-            
+
             try:
                 session.commit()
-                raise AssertionError(
-                    "Expected IntegrityError for invalid foreign key"
-                )
+                raise AssertionError("Expected IntegrityError for invalid foreign key")
             except IntegrityError:
                 pass  # Expected
-        
+
         engine.dispose()
 
 
 def test_check_constraints_enforced():
     """Test that CHECK constraints are enforced at the database level."""
     data_key = b"3" * 32
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         engine = create_encrypted_engine(data_key, db_path)
-        
+
         Base.metadata.create_all(engine)
-        
+
         with Session(engine) as session:
             # Try to create a patient with invalid sex
             patient = Patient(
@@ -149,13 +147,11 @@ def test_check_constraints_enforced():
                 sex="invalid_sex",  # Not in ('female','male','other','unknown')
             )
             session.add(patient)
-            
+
             try:
                 session.commit()
-                raise AssertionError(
-                    "Expected IntegrityError for invalid CHECK constraint"
-                )
+                raise AssertionError("Expected IntegrityError for invalid CHECK constraint")
             except IntegrityError:
                 pass  # Expected
-        
+
         engine.dispose()

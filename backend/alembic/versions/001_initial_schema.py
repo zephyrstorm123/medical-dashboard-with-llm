@@ -325,27 +325,35 @@ def upgrade() -> None:
     op.create_index("idx_ai_citations_message", "ai_citations", ["message_id"])
 
     # === AUDIT_LOG (append-only) ===
+    # patient_id has no FK on purpose: entries must survive patient archiving.
     op.create_table(
         "audit_log",
-        sa.Column("audit_no", sa.Integer(), nullable=False),
-        sa.Column("patient_id", sa.Integer(), nullable=True),
-        sa.Column("event_type", sa.String(50), nullable=False),
-        sa.Column("table_name", sa.String(50), nullable=False),
-        sa.Column("record_id", sa.Integer(), nullable=False),
-        sa.Column("old_values", sa.Text(), nullable=True),
-        sa.Column("new_values", sa.Text(), nullable=True),
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column(
+            "occurred_at",
+            sa.String(24),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+        ),
+        sa.Column("action", sa.String(20), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=True),
-        sa.Column("prev_hash", sa.String(64), nullable=True),
+        sa.Column("entity_type", sa.String(50), nullable=True),
+        sa.Column("entity_id", sa.Integer(), nullable=True),
+        sa.Column("patient_id", sa.Integer(), nullable=True),
+        sa.Column("detail", sa.Text(), nullable=True),
+        sa.Column("prev_hash", sa.String(64), nullable=False),
         sa.Column("hash", sa.String(64), nullable=False),
-        sa.Column("created_at", sa.String(24), nullable=False),
-        sa.PrimaryKeyConstraint("audit_no"),
-        sa.ForeignKeyConstraint(["patient_id"], ["patients.id"]),
+        sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
+        sa.UniqueConstraint("hash", name="uq_audit_hash"),
         sa.CheckConstraint(
-            "event_type IN ('create','update','delete','archive')",
-            name="ck_audit_event_type",
+            "action IN ('unlock','unlock_failed','lock','view','create','update',"
+            "'delete','export','ai_query','backup','restore')",
+            name="ck_audit_action",
         ),
     )
+    op.create_index("idx_audit_time", "audit_log", ["occurred_at"])
+    op.create_index("idx_audit_patient", "audit_log", ["patient_id", "occurred_at"])
 
     # === TRIGGERS FOR AUDIT_LOG (APPEND-ONLY) ===
 

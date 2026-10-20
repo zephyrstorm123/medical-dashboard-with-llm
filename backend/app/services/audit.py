@@ -1,257 +1,200 @@
 """
-Audit service for immutable change tracking with tamper detection.
+Audit service: append-only event log with a SHA-256 hash chain.
 
-Every change to patient records is logged with a hash chain that prevents
-tampering. The audit_log table is append-only (enforced by DB triggers).
+Each entry's hash covers the previous entry's hash, so editing or removing an
+old row with an outside tool breaks the chain and verify_chain() reports it.
+The DB triggers in migration 001 make the table append-only for our own code.
 """
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditLog
 
+# prev_hash of the very first entry (the column is NOT NULL)
+GENESIS_HASH = "0" * 64
+
+ACTIONS = frozenset(
+    {
+        "unlock",
+        "unlock_failed",
+        "lock",
+        "view",
+        "create",
+        "update",
+        "delete",
+        "export",
+        "ai_query",
+        "backup",
+        "restore",
+    }
+)
+
+# Field names like "birth_date" or "phone"; anything with spaces or capitals is
+# probably free text and is rejected.
+_FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _now() -> str:
+    """UTC time in the same format as the DB default: 2026-10-20T08:15:30.123Z."""
+    now = datetime.now(timezone.utc)
+    return f"{now:%Y-%m-%dT%H:%M:%S}.{now.microsecond // 1000:03d}Z"
+
+
+def _encode_detail(detail: Optional[dict]) -> Optional[str]:
+    """
+    Validate detail and return it as canonical JSON.
+
+    Allowed: keys that are field names; values that are int, bool, None, or a
+    list of field names (e.g. {"fields": ["phone", "address"]}). Single string
+    values are rejected, so clinical text cannot slip into the audit log.
+    This is a guard, not a proof: callers must still pass IDs only.
+
+    Raises:
+        ValueError: If any key or value is not allowed
+    """
+    if detail is None:
+        return None
+    for key, value in detail.items():
+        if not isinstance(key, str) or not _FIELD_NAME.match(key):
+            raise ValueError(f"detail key {key!r} is not a field name")
+        if value is None or isinstance(value, (bool, int)):
+            continue
+        if isinstance(value, list) and all(
+            isinstance(item, str) and _FIELD_NAME.match(item) for item in value
+        ):
+            continue
+        raise ValueError(f"detail[{key!r}] must be an ID, count, flag or list of field names")
+    return json.dumps(detail, sort_keys=True, separators=(",", ":"))
+
+
+def _check_id(name: str, value: Optional[int]) -> None:
+    """IDs must be real ints: SQLite would happily store text in an INTEGER column."""
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        raise ValueError(f"{name} must be an int or None")
+
+
+def compute_hash(
+    prev_hash: str,
+    occurred_at: str,
+    user_id: Optional[int],
+    action: str,
+    entity_type: Optional[str],
+    entity_id: Optional[int],
+    patient_id: Optional[int],
+    detail: Optional[str],
+) -> str:
+    """
+    SHA-256 over the fields listed in docs/05, in that fixed order.
+
+    The fields are JSON-encoded as a list rather than concatenated, so
+    ("ab", "c") and ("a", "bc") cannot produce the same hash.
+    """
+    payload = json.dumps(
+        [prev_hash, occurred_at, user_id, action, entity_type, entity_id, patient_id, detail],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _hash_row(row: AuditLog, prev_hash: str) -> str:
+    return compute_hash(
+        prev_hash,
+        row.occurred_at,
+        row.user_id,
+        row.action,
+        row.entity_type,
+        row.entity_id,
+        row.patient_id,
+        row.detail,
+    )
+
 
 class AuditService:
-    """Log and verify immutable audit trail with hash chain integrity."""
+    """Write and verify audit_log entries within the caller's session."""
 
     def __init__(self, session: Session):
-        """
-        Initialize audit service.
-
-        Args:
-            session: SQLAlchemy session for database access
-        """
         self.session = session
 
-    @staticmethod
-    def _compute_hash(
-        prev_hash: Optional[str],
-        event_type: str,
-        table_name: str,
-        record_id: int,
-        old_values: Optional[dict],
-        new_values: Optional[dict],
-    ) -> str:
-        """
-        Compute SHA-256 hash for audit log entry.
-
-        Hash includes previous hash (chain) + all event details.
-        This allows detection of any tampering: modifying, inserting, or
-        deleting audit_log rows would break the chain.
-
-        Args:
-            prev_hash: Previous audit entry's hash (or None for first entry)
-            event_type: 'create', 'update', 'delete', or 'archive'
-            table_name: Name of table that changed (e.g., 'patients')
-            record_id: Primary key of changed record
-            old_values: Field values before change (None for create)
-            new_values: Field values after change (None for delete/archive)
-
-        Returns:
-            SHA-256 hash as hex string (64 chars)
-        """
-        # Build hashable string from all components
-        hash_input = {
-            "prev_hash": prev_hash,
-            "event_type": event_type,
-            "table_name": table_name,
-            "record_id": record_id,
-            "old_values": old_values,
-            "new_values": new_values,
-        }
-
-        # Serialize to JSON (sorted for consistency)
-        hash_string = json.dumps(hash_input, sort_keys=True, separators=(",", ":"))
-
-        # Compute SHA-256
-        return hashlib.sha256(hash_string.encode()).hexdigest()
-
-    def log_event(
+    def log(
         self,
-        patient_id: Optional[int],
-        event_type: str,
-        table_name: str,
-        record_id: int,
+        action: str,
+        *,
         user_id: Optional[int] = None,
-        old_values: Optional[dict] = None,
-        new_values: Optional[dict] = None,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[int] = None,
+        patient_id: Optional[int] = None,
+        detail: Optional[dict] = None,
     ) -> int:
         """
-        Log a change event to the audit trail.
+        Append one entry and return its id.
 
-        This creates an immutable audit_log entry with hash chain.
-        DB triggers enforce append-only (no UPDATE/DELETE allowed).
-
-        Args:
-            patient_id: ID of patient whose data changed (None for non-patient events)
-            event_type: 'create', 'update', 'delete', or 'archive'
-            table_name: Name of table that changed
-            record_id: Primary key of changed record
-            user_id: ID of clinician who made the change (optional)
-            old_values: Field values before change (dict or None)
-            new_values: Field values after change (dict or None)
-
-        Returns:
-            audit_no: Sequential audit log number (for citation)
+        The entry is flushed but not committed: it is saved or rolled back
+        together with the change it describes.
 
         Raises:
-            ValueError: If event_type is invalid
+            ValueError: If action is unknown, an ID is not an int, or
+                entity_type/detail looks like free text
         """
-        valid_event_types = {"create", "update", "delete", "archive"}
-        if event_type not in valid_event_types:
-            raise ValueError(f"event_type must be one of {valid_event_types}")
+        if action not in ACTIONS:
+            raise ValueError(f"action must be one of {sorted(ACTIONS)}")
+        for name, value in (
+            ("user_id", user_id),
+            ("entity_id", entity_id),
+            ("patient_id", patient_id),
+        ):
+            _check_id(name, value)
+        if entity_type is not None and not _FIELD_NAME.match(entity_type):
+            raise ValueError("entity_type must be a table-style name like 'patient'")
 
-        # Get previous hash (from most recent audit entry)
-        prev_hash = self._get_last_hash()
-
-        # Compute this entry's hash
-        current_hash = self._compute_hash(
-            prev_hash=prev_hash,
-            event_type=event_type,
-            table_name=table_name,
-            record_id=record_id,
-            old_values=old_values,
-            new_values=new_values,
-        )
-
-        # Create audit log entry
-        audit_entry = AuditLog(
-            patient_id=patient_id,
-            event_type=event_type,
-            table_name=table_name,
-            record_id=record_id,
-            old_values=json.dumps(old_values) if old_values else None,
-            new_values=json.dumps(new_values) if new_values else None,
+        row = AuditLog(
+            occurred_at=_now(),
+            action=action,
             user_id=user_id,
-            prev_hash=prev_hash,
-            hash=current_hash,
-            created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            entity_type=entity_type,
+            entity_id=entity_id,
+            patient_id=patient_id,
+            detail=_encode_detail(detail),
+            prev_hash=self._last_hash(),
         )
+        row.hash = _hash_row(row, row.prev_hash)
+        self.session.add(row)
+        self.session.flush()
+        return row.id
 
-        self.session.add(audit_entry)
-        self.session.flush()  # Get audit_no before commit
+    def _last_hash(self) -> str:
+        last = self.session.scalar(select(AuditLog.hash).order_by(AuditLog.id.desc()).limit(1))
+        return last or GENESIS_HASH
 
-        audit_no = audit_entry.audit_no
-        return audit_no
-
-    def _get_last_hash(self) -> Optional[str]:
+    def verify_chain(self) -> list[int]:
         """
-        Get the hash of the most recent audit log entry.
+        Recompute every hash from the first entry onward.
 
         Returns:
-            Previous hash (hex string) or None if audit_log is empty
+            ids of entries whose content or link is broken (empty = intact).
+            A changed row fails its own hash; a removed row makes the next
+            row's prev_hash wrong. Removing the newest rows is not detectable
+            from the chain alone.
         """
-        last_entry = (
-            self.session.query(AuditLog)
-            .order_by(AuditLog.audit_no.desc())
-            .first()
+        broken = []
+        expected_prev = GENESIS_HASH
+        for row in self.session.scalars(select(AuditLog).order_by(AuditLog.id)):
+            if row.prev_hash != expected_prev or _hash_row(row, row.prev_hash) != row.hash:
+                broken.append(row.id)
+            expected_prev = row.hash
+        return broken
+
+    def patient_trail(self, patient_id: int) -> list[AuditLog]:
+        """All entries for one patient, oldest first (for review and export)."""
+        stmt = (
+            select(AuditLog)
+            .where(AuditLog.patient_id == patient_id)
+            .order_by(AuditLog.occurred_at, AuditLog.id)
         )
-        return last_entry.hash if last_entry else None
-
-    def verify_hash_chain(self, start_audit_no: int = 1) -> tuple[bool, list[str]]:
-        """
-        Verify integrity of audit hash chain.
-
-        Recomputes all hashes from start_audit_no onward and checks they match
-        stored hashes. Any mismatch indicates tampering.
-
-        Args:
-            start_audit_no: First audit entry to check (default: 1 = from beginning)
-
-        Returns:
-            (is_valid, errors) where:
-            - is_valid: True if all hashes are valid (no tampering detected)
-            - errors: List of error messages (empty if valid)
-        """
-        errors = []
-
-        # Fetch all audit entries from start_audit_no
-        entries = (
-            self.session.query(AuditLog)
-            .filter(AuditLog.audit_no >= start_audit_no)
-            .order_by(AuditLog.audit_no.asc())
-            .all()
-        )
-
-        if not entries:
-            return True, []
-
-        # Verify first entry's prev_hash
-        first_entry = entries[0]
-        if first_entry.prev_hash is not None and start_audit_no == 1:
-            # If verifying from the beginning, first entry should have no prev_hash
-            errors.append(
-                f"First audit entry (audit_no={first_entry.audit_no}) "
-                f"should have prev_hash=NULL"
-            )
-
-        # Verify each entry's hash
-        prev_hash = None
-        for i, entry in enumerate(entries):
-            # For entries after start_audit_no, use previous entry's hash
-            if i > 0:
-                prev_hash = entries[i - 1].hash
-            elif start_audit_no > 1:
-                # For verification starting mid-chain, get the actual prev_hash
-                prev_hash = entry.prev_hash
-
-            # Recompute hash
-            old_vals = json.loads(entry.old_values) if entry.old_values else None
-            new_vals = json.loads(entry.new_values) if entry.new_values else None
-
-            computed_hash = self._compute_hash(
-                prev_hash=prev_hash,
-                event_type=entry.event_type,
-                table_name=entry.table_name,
-                record_id=entry.record_id,
-                old_values=old_vals,
-                new_values=new_vals,
-            )
-
-            # Check match
-            if computed_hash != entry.hash:
-                errors.append(
-                    f"Hash mismatch at audit_no={entry.audit_no}: "
-                    f"expected {entry.hash}, computed {computed_hash}"
-                )
-
-        return len(errors) == 0, errors
-
-    def get_patient_audit_trail(self, patient_id: int) -> list[dict]:
-        """
-        Get all audit entries for a patient (for review/compliance).
-
-        Args:
-            patient_id: Patient ID
-
-        Returns:
-            List of audit entries (dicts with audit_no, event_type, etc.)
-        """
-        entries = (
-            self.session.query(AuditLog)
-            .filter(AuditLog.patient_id == patient_id)
-            .order_by(AuditLog.created_at.asc())
-            .all()
-        )
-
-        result = []
-        for entry in entries:
-            result.append({
-                "audit_no": entry.audit_no,
-                "event_type": entry.event_type,
-                "table_name": entry.table_name,
-                "record_id": entry.record_id,
-                "user_id": entry.user_id,
-                "created_at": entry.created_at,
-                "old_values": json.loads(entry.old_values)
-                if entry.old_values
-                else None,
-                "new_values": json.loads(entry.new_values)
-                if entry.new_values
-                else None,
-            })
-        return result
+        return list(self.session.scalars(stmt))

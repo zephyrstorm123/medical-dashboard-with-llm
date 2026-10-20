@@ -189,9 +189,7 @@ def map_bundle(
 
     for resource in resources:
         resource_type = resource.get("resourceType")
-        encounter_id = encounter_ids.get(
-            source_id(resource.get("encounter", {}).get("reference"))
-        )
+        encounter_id = encounter_ids.get(source_id(resource.get("encounter", {}).get("reference")))
 
         if resource_type == "Condition":
             concept = resource.get("code", {})
@@ -199,15 +197,10 @@ def map_bundle(
             if not description:
                 continue
             status_codes = [
-                item.get("code")
-                for item in resource.get("clinicalStatus", {}).get("coding", [])
+                item.get("code") for item in resource.get("clinicalStatus", {}).get("coding", [])
             ]
             status = next(
-                (
-                    item
-                    for item in status_codes
-                    if item in {"active", "resolved", "inactive"}
-                ),
+                (item for item in status_codes if item in {"active", "resolved", "inactive"}),
                 "active",
             )
             icd10_code = next(
@@ -259,14 +252,8 @@ def map_bundle(
             )
             timing = instruction.get("timing", {}).get("repeat", {})
             frequency = None
-            if (
-                timing.get("frequency")
-                and timing.get("period")
-                and timing.get("periodUnit")
-            ):
-                frequency = (
-                    f"{timing['frequency']}/{timing['period']} {timing['periodUnit']}"
-                )
+            if timing.get("frequency") and timing.get("period") and timing.get("periodUnit"):
+                frequency = f"{timing['frequency']}/{timing['period']} {timing['periodUnit']}"
             validity = resource.get("dispenseRequest", {}).get("validityPeriod", {})
             tables["medications"].append(
                 {
@@ -277,12 +264,8 @@ def map_bundle(
                     "dose": dose,
                     "route": code_text(instruction.get("route")),
                     "frequency": frequency,
-                    "indication": code_text(
-                        next(iter(resource.get("reasonCode", [])), None)
-                    ),
-                    "start_date": iso_date(
-                        resource.get("authoredOn") or validity.get("start")
-                    ),
+                    "indication": code_text(next(iter(resource.get("reasonCode", [])), None)),
+                    "start_date": iso_date(resource.get("authoredOn") or validity.get("start")),
                     "end_date": iso_date(validity.get("end")),
                     "status": status,
                 }
@@ -295,11 +278,7 @@ def map_bundle(
             categories = resource.get("category", [])
             category_values = {item.lower() for item in categories}
             category = next(
-                (
-                    item
-                    for item in ("drug", "food", "environment")
-                    if item in category_values
-                ),
+                (item for item in ("drug", "food", "environment") if item in category_values),
                 "other",
             )
             reactions = resource.get("reaction", [])
@@ -314,11 +293,7 @@ def map_bundle(
             )
             severity_values = {item.get("severity") for item in reactions}
             severity = next(
-                (
-                    item
-                    for item in ("mild", "moderate", "severe")
-                    if item in severity_values
-                ),
+                (item for item in ("mild", "moderate", "severe") if item in severity_values),
                 "unknown",
             )
             tables["allergies"].append(
@@ -326,9 +301,7 @@ def map_bundle(
                     "id": allocate(next_ids, "allergies"),
                     "patient_id": patient_id,
                     "substance": substance,
-                    "category": "environmental"
-                    if category == "environment"
-                    else category,
+                    "category": "environmental" if category == "environment" else category,
                     "reaction": manifestation,
                     "severity": severity,
                 }
@@ -339,9 +312,7 @@ def map_bundle(
         if resource.get("resourceType") != "Observation":
             continue
         observation_time = timestamp(resource)
-        encounter_id = encounter_ids.get(
-            source_id(resource.get("encounter", {}).get("reference"))
-        )
+        encounter_id = encounter_ids.get(source_id(resource.get("encounter", {}).get("reference")))
         concept = resource.get("code", {})
         observation_code = code_value(concept)
 
@@ -407,11 +378,7 @@ def map_bundle(
                 value_num = resource.get("valueInteger")
                 if value_num is None and resource.get("valueBoolean") is not None:
                     value_text = str(resource["valueBoolean"])
-            if (
-                not test_name
-                or not collected_date
-                or (value_num is None and value_text is None)
-            ):
+            if not test_name or not collected_date or (value_num is None and value_text is None):
                 continue
             reference_range = next(iter(resource.get("referenceRange", [])), {})
             interpretation = next(iter(resource.get("interpretation", [])), {})
@@ -434,9 +401,7 @@ def map_bundle(
                     "test_name": test_name,
                     "value_num": value_num,
                     "value_text": value_text,
-                    "unit": quantity.get("unit")
-                    if isinstance(quantity, dict)
-                    else None,
+                    "unit": quantity.get("unit") if isinstance(quantity, dict) else None,
                     "ref_low": low,
                     "ref_high": high,
                     "flag": flag,
@@ -465,9 +430,7 @@ def map_directory(input_dir: Path) -> dict[str, list[dict[str, Any]]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("synthea_output/fhir"))
-    parser.add_argument(
-        "--output", type=Path, default=Path("synthea_output/clinic_schema.json")
-    )
+    parser.add_argument("--output", type=Path, default=Path("synthea_output/clinic_schema.json"))
     args = parser.parse_args()
     if not args.input.is_dir():
         parser.error(f"FHIR input directory does not exist: {args.input}")
